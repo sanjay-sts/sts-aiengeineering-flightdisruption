@@ -30,7 +30,122 @@ class WeatherModel(BaseModel):
     lat: Latitude
     long: Longitude
 
-# test_json_data = '''{
+
+
+async def current(client :httpx.AsyncClient, city: str, state: str, country: str) -> WeatherModel | None:
+    print("current called")
+    try:
+        params = {"q": f"{city},{state},{country}", "limit": 1, "appid": openweatherapi}
+        print(params)
+        gecode = await client.get("geo/1.0/direct?q=", params=params)
+        print(gecode.raise_for_status())
+        print(gecode.status_code)
+        print(gecode.json())
+        lat = gecode.json()[0].get('lat')
+        long = gecode.json()[0].get('lon')
+        print(lat, long)
+        print("calling current weather")
+        city_weather = await client.get("data/2.5/weather?", params={"lat":lat, "lon":long, "units":"metric", "appid":openweatherapi})
+        print(city_weather)
+        print(city_weather.status_code)
+        print(city_weather.json())
+        wx_city = city_weather.json().get('name')
+        wx_country = city_weather.json().get('sys').get('country')
+        wx_description = city_weather.json().get('weather')[0].get('description')
+        wx_temp = city_weather.json().get('main').get('temp')
+        wx_lat= city_weather.json().get('coord').get('lat')
+        wx_long = city_weather.json().get('coord').get('lon')
+        wx_visibility = city_weather.json().get('visibility')
+        print(wx_city,state, wx_country, wx_description, wx_temp, wx_lat, wx_long, wx_visibility)
+        weather_data = {
+            "city" : wx_city,
+            "state" : state,
+            "country" : wx_country,
+            "desc": wx_description,
+            "temp": wx_temp,
+            "lat": wx_lat,
+            "long": wx_long,
+            "visibility": wx_visibility
+        }
+        return WeatherModel.model_validate(weather_data)
+    except httpx.HTTPStatusError as e:
+        # 4xx or 5xx response
+        print(f"HTTP error {e.response.status_code}: {e.response.text[:200]}")
+
+        if e.response.status_code == 401:
+            print("Authentication required")
+        elif e.response.status_code == 403:
+            print("Access forbidden")
+        elif e.response.status_code == 404:
+            print("Resource not found")
+        elif e.response.status_code == 429:
+            retry_after = e.response.headers.get("Retry-After", "unknown")
+            print(f"Rate limited. Retry after: {retry_after}")
+        elif e.response.status_code >= 500:
+            print("Server error - try again later")
+
+        return None
+    except httpx.TimeoutException:
+        print(f"Request timed out")
+        return None
+
+
+
+
+async def main():
+    base_weather_url = "https://api.openweathermap.org/"
+    geo_endpoint = "geo/1.0/"
+    data_endpoint = "data/2.5/weather"
+
+    city_list = [{
+        "city":"calgary",
+        "state":"AB",
+        "country":"CA"
+    },
+    {     "city":"Vancouver",
+    "state":"BC",
+    "country":"CA"  },
+    {
+        "city":"regina",
+        "state":"SK",
+        "country":"CA"
+    }
+    ]
+
+    async with httpx.AsyncClient(base_url=base_weather_url, timeout=10) as client:
+        tasks = []
+        try:
+            for item in city_list:
+                city = item.get('city')
+                state = item.get('state')
+                country = item.get('country')
+                print(city, state, country)
+                task = current(client, city, state, country)
+                tasks.append(task)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            print("results called")
+            print(results)
+        except:
+            print("error parsing")
+
+
+
+
+asyncio.run(main())
+
+
+# def extract_lat_long(results: list[dict]) -> list[dict]:
+#     latlong_list = []
+#     for result in results:
+#         lat = result[0].get('lat')
+#         long = result[0].get('lon')
+#         lat_long_dict = {"lat":lat, "long":long}
+#         latlong_list.append(lat_long_dict)
+#         print(f"lat = {lat}, long = {long}")
+#     return latlong_list
+#
+#
+# # test_json_data = '''{
 #     "city":"calgary",
 #     "state":"AB",
 #     "country":"CA",
@@ -76,70 +191,27 @@ class WeatherModel(BaseModel):
 
 
 
+# async def extract_weather(city_list):
+#     try:
+#         urls = []
+#         for city in city_list:
+#             gcode_direct_query = base_weather_url+geo_endpoint+f"direct?q={city.get('city')},{city.get('state')},{city.get('country')}&limit=5&appid={openweatherapi}"
+#             print(gcode_direct_query)
+#             urls.append(gcode_direct_query)
+#             print(urls)
+#         async with httpx.AsyncClient(timeout=10) as client:
 
-async def fetch_gcodes(urls:list[str]) -> list[dict]:
-    async with httpx.AsyncClient() as client:
-        tasks = [client.get(url) for url in urls]
-        responses = await asyncio.gather(*tasks)
-        return [r.json() for r in responses]
-
-async def current(urls:list[str]) -> list[dict]:
-    async with httpx.AsyncClient() as client:
-        tasks = [client.get(url) for url in urls]
-        responses = await asyncio.gather(*tasks)
-        return [r.json() for r in responses]
-
-def extract_lat_long(results: list[dict]) -> list[dict]:
-    latlong_list = []
-    for result in results:
-        lat = result[0].get('lat')
-        long = result[0].get('lon')
-        lat_long_dict = {"lat":lat, "long":long}
-        latlong_list.append(lat_long_dict)
-        print(f"lat = {lat}, long = {long}")
-    return latlong_list
-
-async def main():
-    base_weather_url = "http://api.openweathermap.org/"
-    geo_endpoint = "geo/1.0/"
-    # data_endpoint = "data/2.5/weather"
-
-    city_list = [{
-        "city":"calgary",
-        "state":"AB",
-        "country":"CA"
-    },
-    {     "city":"Vancouver",
-    "state":"BC",
-    "country":"CA"  },
-    {
-        "city":"regina",
-        "state":"SK",
-        "country":"CA"
-    }
-    ]
-
-    urls = []
-    for city in city_list:
-        gcode_direct_query = base_weather_url+geo_endpoint+f"direct?q={city.get('city')},{city.get('state')},{city.get('country')}&limit=5&appid={openweatherapi}"
-        print(gcode_direct_query)
-        urls.append(gcode_direct_query)
-
-    print(urls)
-
-    results = await fetch_gcodes(urls)
-    print(results)
-
-    list_latlong = extract_lat_long(results)
-    weather_urls = []
-    for latlong in list_latlong:
-        print(latlong)
-        weather_direct_query = f"https://api.openweathermap.org/data/2.5/weather?lat={latlong.get('lat')}&lon={latlong.get('long')}&units=metric&appid={openweatherapi}"
-        print(weather_direct_query)
-        weather_urls.append(weather_direct_query)
-
-    current_weather = await current(weather_urls)
-    print(current_weather)
+#     except:
+#         pass
 
 
-asyncio.run(main())
+
+# async def fetch_gcodes(urls:list[str]) -> list[dict] | None:
+#     try:
+#         async with httpx.AsyncClient(timeout=10) as client:
+#             tasks = [client.get(url) for url in urls]
+#             responses = await asyncio.gather(*tasks)
+#             for r in responses: r.raise_for_status()
+#             return [r.json() for r in responses]
+#     except httpx.HTTPStatusError as e:
+#             print(f"HTTP error {e.response.status_code}: {e.response.text[:200]}")
