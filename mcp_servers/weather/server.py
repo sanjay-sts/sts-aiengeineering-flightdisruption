@@ -1,13 +1,15 @@
 import asyncio
-import os
 
-import httpx
-from dotenv import load_dotenv
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 from pydantic_extra_types.coordinate import Latitude, Longitude
 
-load_dotenv()
-KEY = os.environ["OPENWEATHER_KEY"]          # raises immediately if missing
+from libs.http_base import ApiToolServer
+
+KEY_NAME = "OPENWEATHER_KEY"
+BASE_URL = "https://api.openweathermap.org"
+GEO_CODE_PATH = "/geo/1.0/direct"
+WEATHER_PATH = "/data/2.5/weather"
+
 
 class WeatherModel(BaseModel):
     city: str
@@ -17,7 +19,7 @@ class WeatherModel(BaseModel):
     temp: float
     lat: Latitude
     long: Longitude
-    visibility: int | None = None            # Vancouver-style optional field
+    visibility: int | None = None
 
     @field_validator("temp")
     @classmethod
@@ -29,25 +31,21 @@ class WeatherModel(BaseModel):
         return round(value, 1)
 
 
-async def current(client: httpx.AsyncClient, city: str, state: str, country: str) -> WeatherModel:
-    try:
-        geo_resp = await client.get(
-            "/geo/1.0/direct",
-            params={"q": f"{city},{state},{country}", "limit": 1, "appid": KEY},
-        )
-        geo_resp.raise_for_status()
-        geo = geo_resp.json()
+class WeatherServer(ApiToolServer):
+    def __init__(self):
+        super().__init__("weather-mcp", KEY_NAME)
+
+    @property
+    def base_url(self) -> str:
+        return BASE_URL
+
+    async def current_weather(self, city: str, state: str, country: str) -> WeatherModel:
+        geo = await self.get(GEO_CODE_PATH, q=f"{city},{state},{country}", limit=1)
         if not geo:
             raise ValueError(f"no geocode match for {city},{state},{country}")
         lat, lon = geo[0]["lat"], geo[0]["lon"]
 
-        wx_resp = await client.get(
-            "/data/2.5/weather",
-            params={"lat": lat, "lon": lon, "units": "metric", "appid": KEY},
-        )
-        wx_resp.raise_for_status()
-        d = wx_resp.json()
-
+        d = await self.get(WEATHER_PATH, lat=lat, lon=lon, units="metric")
         return WeatherModel.model_validate({
             "city": d["name"],
             "state": state,
@@ -59,18 +57,6 @@ async def current(client: httpx.AsyncClient, city: str, state: str, country: str
             "visibility": d.get("visibility"),
         })
 
-    except httpx.HTTPStatusError as e:
-        print(f"{city}: HTTP {e.response.status_code}: {e.response.text[:200]}")
-        if e.response.status_code == 429:
-            print(f"{city}: rate limited, Retry-After={e.response.headers.get('Retry-After', '?')}")
-        raise
-    except httpx.TimeoutException:
-        print(f"{city}: request timed out")
-        raise
-    except ValidationError as e:
-        print(f"{city}: validation failed: {e.errors()}")
-        raise
-
 
 async def main():
     city_list = [
@@ -80,10 +66,9 @@ async def main():
         {"city": "Xyzabc", "state": "AB", "country": "CA"},   # deliberate failure
     ]
 
-    async with httpx.AsyncClient(base_url="https://api.openweathermap.org", timeout=10) as client:
-        tasks = []
-        for item in city_list:
-            tasks.append(current(client, item["city"], item["state"], item["country"]))
+    async with WeatherServer() as ws:
+        print(ws)
+        tasks = [ws.current_weather(**item) for item in city_list]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     for item, result in zip(city_list, results):
@@ -93,4 +78,5 @@ async def main():
             print(result.model_dump_json(indent=2))
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
